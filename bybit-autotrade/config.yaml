@@ -1,0 +1,60 @@
+﻿# ============================================================
+# 자동매매 실전 검증 설정 — 한도 %·레버리지·모드(실계좌 켜기)는 이 파일에서만 바뀝니다 (바꾼 뒤 재시작).
+# 예산 칸(budgets)은 이 파일 또는 웹 화면 '💰 예산 수정'에서 바꿀 수 있고, 저장하면 1분 안에 자동 적용됩니다.
+# 휴대폰(웹·텔레그램)에서 할 수 있는 것: 예산 수정(올릴 때 비밀번호 다시) / 정지 / 재개 / 전체 청산.
+# ============================================================
+
+screener:
+  url: http://127.0.0.1:8000      # 같은 PC 의 스크리너 (읽기만)
+  poll_sec: 20                     # 사건 확인 간격(초)
+
+risk:
+  per_trade_risk_pct: 0.25         # 손절 시 손실 목표 = 전략 예산의 0.25%
+  per_trade_risk_cap_pct: 2.0      # 절대 상한 2% (넘는 주문은 거부)
+  max_risk_after_rounding_pct: 0.5 # 최소 주문(5 USDT) 때문에 커지는 위험 허용선
+  daily_loss_limit_pct: 6.0        # 투자 방법마다: 오늘(KST) 그 방법 손실이 그 예산의 6% → 그 방법만 그날 신규 진입 중단
+  cumulative_stop_pct: 20.0        # 투자 방법마다: 누적 손실이 그 예산의 20% → 그 방법만 정지
+  cumulative_reset_id: 0           # 누적 정지를 풀려면 이 숫자를 1 올리고 재시작 (수동 재개)
+  max_positions_per_strategy: 60   # 사실상 신호를 거의 다 받도록 (같은 코인 중복만 막음)
+  leverage_cap: 5                  # 레버리지 상한
+  liq_buffer_pct: 5.0              # 청산가는 손절가보다 5%p 이상 멀어야 (보통 4배로 계산됨)
+
+strategy:
+  stop_loss_pct: 15                # 모든 전략 손절 −15% (진입과 동시에 거래소에)
+  h4_take_profit_pct: 12           # H4: +12% 에서 절반 익절
+  lock_profit_pct: 0.5             # H4 익절 뒤 / H5 +5% 뒤 손절을 +0.5% 로
+  h5_trigger_pct: 5
+  hold_hours: {H3: 72, H4: 168, H5: 168}
+
+# 장부(book) = 계좌 하나. 예산 칸(USDT)이 0 이거나 비면 그 전략은 안 돌립니다.
+# 최소 금액: H3 180 · H4 350 · H5 180 USDT (이보다 작으면 그 방법은 꺼짐). 이 위로는 마음대로 적으세요.
+#   최소 금액에서는 거래당 손절 위험이 예산의 약 0.5%, 금액을 2배로 올리면 약 0.25% 가 됩니다.
+# regime_gate: block = 그 레짐이면 진입 안 함 / record = 진입하고 레짐만 기록
+books:
+  - name: paper
+    mode: paper                    # 실시간 시세 + 가상 체결 (돈 안 씀)
+    budgets: {H3: 180, H4: 350, H5: 180}       # 가상 돈. 실계좌와 같은 크기로 맞춰 둠 (최소 금액)
+    regime_gate: {k1_down: record, low_vol: record}
+
+# ---- 데모 (바이비트 데모 트레이딩 키를 .env 에 넣은 뒤 아래 # 를 지우세요) ----
+#  - name: demo
+#    mode: demo
+#    budgets: {H3: 3000, H4: 3000, H5: 3000}
+#    regime_gate: {k1_down: record, low_vol: record}
+
+# ---- 실계좌 (2026-10-13 사용자 요청으로 블록을 켜 둠) ----
+# 이 블록만으로는 실제 거래가 시작되지 않습니다. 아래 둘이 모두 있어야 재시작 때 켜집니다:
+#   1) .env 의 BYBIT_LIVE_API_KEY / BYBIT_LIVE_API_SECRET   2) LIVE_CONFIRM.txt (첫 줄: LIVE TRADING CONFIRMED BY OWNER)
+# 없으면 현황판에 '[live] 꺼짐: 이유' 로만 보입니다. 끄려면 아래 4줄 앞에 # 를 다시 붙이고 재시작.
+  - name: live
+    mode: live
+    budgets: {H3: 180, H4: 350, H5: 180}      # 최소 금액. 이 위로 자유롭게 (0 = 그 방법 안 씀) — 웹에서도 수정 가능
+    regime_gate: {k1_down: block, low_vol: block}
+
+telegram:
+  enabled: true                    # TELEGRAM_BOT_TOKEN 이 있을 때만 켜짐
+
+web:
+  host: 0.0.0.0                    # 집 와이파이에서 휴대폰으로 보기. 밖에서 보려면 README 참고
+  port: 8100
+

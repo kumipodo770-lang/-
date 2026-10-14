@@ -1,0 +1,9 @@
+
+== 결과 ==
+H3m cancelled 지정가 0.08246 체결 None × None (, maker=None) 청산 None None () 수수료 0.0000 손익 None USDT (None%) 보유 Noneh L5
+H4a cancelled 지정가 0.08246 체결 None × None (, maker=None) 청산 None None () 수수료 0.0000 손익 None USDT (None%) 보유 Noneh L5
+H4b cancelled 지정가 0.08246 체결 None × None (, maker=None) 청산 None None () 수수료 0.0000 손익 None USDT (None%) 보유 Noneh L5
+H5m cancelled 지정가 0.08246 체결 None × None (, maker=None) 청산 None None () 수수료 0.0000 손익 None USDT (None%) 보유 Noneh L5
+결정: [{"strategy": "H3", "decision": "enter", "reason": "L5 위험 0.25% (7.50 USDT)"}, {"strategy": "H4", "decision": "enter", "reason": "L5 위험 0.25% (7.50 USDT)"}, {"strategy": "H5", "decision": "enter", "reason": "L5 위험 0.25% (7.50 USDT)"}]
+오류·경고: []
+paper 체결 기록 0건, 남은 주문 0, 남은 포지션 {}
