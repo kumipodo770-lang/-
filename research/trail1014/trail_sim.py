@@ -1,6 +1,6 @@
 """
-trail1014 시뮬레이터 — trail_study.md (사전 고정) 2·3·4절 규칙 그대로. 15분봉, 순수 함수.
-봉 = (t_open_ms, open, high, low, close), t_open 오름차순.
+trail1014 시뮬레이터 — trail_study.md (사전 고정) 2·3·4절 규칙과 변경 기록(2026-10-14 16:14) 그대로. 15분봉, 순수 함수.
+봉 = (t_open_ms, open, high, low, close), t_open 오름차순·중복 없음.
 """
 BAR_MS = 15 * 60 * 1000
 H = 3_600_000
@@ -9,10 +9,12 @@ FEE_TAKER = 0.00055
 STOP = 0.85          # 손절가 = 진입가(=지정가) × 0.85
 LOCK = 1.005         # 잠금 손절가 = 진입가 × 1.005
 H4_TP = 12.0
+EPS = 1e-12          # 가격이 기준가와 같으면 닿음 (부동소수 오차 허용, 변경 기록 2)
 
 VARIANTS = ["H3-현행", "H3-L3", "H3-L5", "H3-L8", "H4-현행", "H4-V1", "H4-V2"]
 PAIRS = [("H3-L3", "H3-현행"), ("H3-L5", "H3-현행"), ("H3-L8", "H3-현행"),
          ("H4-V1", "H4-현행"), ("H4-V2", "H4-현행")]
+BASE = dict(PAIRS)
 HOLD_H = {"H3": 72, "H4": 168}
 
 
@@ -23,7 +25,7 @@ def find_fill(bars, t_sig, limit_px, limit_until):
             continue
         if t >= limit_until:
             return None
-        if l < limit_px:
+        if l < limit_px * (1 - EPS):
             return i
     return None
 
@@ -42,52 +44,71 @@ def run_leg(bars, i_fill, entry, hold_h, tp_pct=None, trig_pct=None, arm_from=No
     tp = entry * (1 + tp_pct / 100) if tp_pct else None
     trig = entry * (1 + trig_pct / 100) if trig_pct else None
     t0, o, h, l, c = bars[i_fill]
-    if l <= stop:                                   # 체결 봉: 손절만 본다 (불리)
+    if l <= stop * (1 + EPS):                       # 체결 봉: 손절만 본다 (불리)
         return min(stop, o), "SL", i_fill
     due = t0 + BAR_MS + hold_h * H                  # 체결 시각 = 체결 봉 마감
     cur, armed, arm_next = stop, False, None
     for j in range(i_fill + 1, len(bars)):
         t, o, h, l, c = bars[j]
-        if t >= due:
+        if t >= due:                                # due 봉 (없으면 due 뒤 첫 봉) 시가
             return o, "TIME", j
         if (arm_next is not None and j >= arm_next) or (arm_from is not None and j >= arm_from):
             if not armed:
                 cur, armed = lock, True
-        if l <= cur:                                # 1) 손절 먼저 (같은 봉 익절·트리거보다 우선)
+        if l <= cur * (1 + EPS):                    # 1) 손절 먼저 (같은 봉 익절·트리거보다 우선)
             return min(cur, o), ("LOCK" if armed else "SL"), j
-        if tp is not None and h >= tp:              # 2) 익절
+        if tp is not None and h >= tp * (1 - EPS):  # 2) 익절
             return max(tp, o), "TP", j
-        if trig is not None and not armed and arm_next is None and h >= trig:
+        if trig is not None and not armed and arm_next is None and h >= trig * (1 - EPS):
             arm_next = j + 1                        # 3) 트리거 → 다음 봉부터
-    return bars[-1][4], "CUT", len(bars) - 1
+    last = len(bars) - 1
+    return bars[last][4], ("TIME" if bars[last][0] + BAR_MS >= due else "CUT"), last
 
 
-def simulate_event(bars, t_sig, limit_px, limit_until):
-    """사건 하나 → None (미체결) 또는 {fill_t, 변형별 수익률·이유}."""
+def simulate_event(bars, t_sig, limit_px, limit_until, names=None):
+    """사건 하나 → None (미체결) 또는 {fill_t, 변형별 수익률·이유}. names: 계산할 변형 (기본 전부)."""
     i = find_fill(bars, t_sig, limit_px, limit_until)
     if i is None:
         return None
     e = limit_px
+    names = names or VARIANTS
     out = {"fill_t": bars[i][0] + BAR_MS, "ret": {}, "why": {}}
+    memo = {}
 
-    def put(name, legs):
-        out["ret"][name] = sum(w * ret_pct(e, x) for w, (x, _, _) in legs)
-        out["why"][name] = "+".join(r for _, (_, r, _) in legs)
+    def a_leg():
+        if "a" not in memo:
+            memo["a"] = run_leg(bars, i, e, 168, tp_pct=H4_TP)
+        return memo["a"]
 
-    put("H3-현행", [(1.0, run_leg(bars, i, e, 72))])
-    for x in (3, 5, 8):
-        put(f"H3-L{x}", [(1.0, run_leg(bars, i, e, 72, trig_pct=x))])
-    a = run_leg(bars, i, e, 168, tp_pct=H4_TP)
-    b_cur = run_leg(bars, i, e, 168, arm_from=(a[2] + 1) if a[1] == "TP" else None)
-    put("H4-현행", [(0.5, a), (0.5, b_cur)])
-    put("H4-V1", [(1.0, run_leg(bars, i, e, 168, trig_pct=H4_TP))])
-    put("H4-V2", [(0.5, a), (0.5, run_leg(bars, i, e, 168))])
+    def legs(name):
+        if name == "H3-현행":
+            return [(1.0, run_leg(bars, i, e, 72))]
+        if name.startswith("H3-L"):
+            return [(1.0, run_leg(bars, i, e, 72, trig_pct=int(name[4:])))]
+        if name == "H4-현행":
+            a = a_leg()
+            return [(0.5, a), (0.5, run_leg(bars, i, e, 168, arm_from=(a[2] + 1) if a[1] == "TP" else None))]
+        if name == "H4-V1":
+            return [(1.0, run_leg(bars, i, e, 168, trig_pct=H4_TP))]
+        if name == "H4-V2":
+            return [(0.5, a_leg()), (0.5, run_leg(bars, i, e, 168))]
+        raise ValueError(name)
+
+    for name in names:
+        lg = legs(name)
+        out["ret"][name] = sum(w * ret_pct(e, x) for w, (x, _, _) in lg)
+        out["why"][name] = "+".join(r for _, (_, r, _) in lg)
     return out
 
 
 def window_done(fill_t, strategy, cutoff_ms):
-    """보유 기간까지 끝났는지 (판정 표본 세기용, 수익률은 보지 않음)."""
+    """보유 기간까지 cutoff 안에 끝나는지 (표본 세기용, 수익률은 보지 않음)."""
     return fill_t + HOLD_H[strategy] * H <= cutoff_ms
+
+
+def sort_key(t):
+    """앞·뒤 절반 정렬 (변경 기록 3)"""
+    return (t["fill_t"], t["t_sig"], t["symbol"], t["event_id"])
 
 
 # ---------------- 지표·기준 (5·6절) ----------------
@@ -101,7 +122,7 @@ def _halves(xs):
 
 
 def stats(rets):
-    """rets: 체결 시각 순. N, 승률, 평균, 상위3 제외 평균, 앞·뒤 절반 평균."""
+    """rets: 정렬된 순서. N, 승률, 평균, 상위3 제외 평균, 앞·뒤 절반 평균."""
     n = len(rets)
     first, second = _halves(rets)
     top3_ex = sorted(rets)[:-3] if n > 3 else []
@@ -110,7 +131,7 @@ def stats(rets):
 
 
 def compare(var, cur, n_min):
-    """var, cur: 같은 거래 순서(체결 시각 순)의 수익률. 기준 A~D."""
+    """var, cur: 같은 거래 순서의 수익률. 기준 A~D."""
     d = [v - c for v, c in zip(var, cur)]
     n = len(d)
     first, second = _halves(d)

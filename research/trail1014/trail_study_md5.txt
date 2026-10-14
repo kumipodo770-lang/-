@@ -1,1 +1,2 @@
 trail_study.md md5 459d011c1f9eb55c6a52027c2af16f09  기록 2026-10-14 15:43:38 KST (결과 0건, 클라우드 세션 작성 — PC 데이터·시세 접근 없음)
+trail_study.md md5 3cc1b8b4c9fa81d93c44c8cc296eb8d1  기록 2026-10-14 16:22:17 KST (변경 기록 1건 추가 후, 실데이터 결과 0건)

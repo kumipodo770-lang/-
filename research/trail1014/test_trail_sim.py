@@ -127,3 +127,76 @@ def test_stats_and_compare():
     assert c["A"] and not c["B"] and not c["pass"]        # 상위 3개가 전부
     c = T.compare([1, 1, -2, -2], [0, 0, 0, 0], n_min=1)
     assert not c["A"] and not c["C"]
+
+
+# ---------- 경계·변경 기록 (2026-10-14 16:14) ----------
+def test_fill_window_end():
+    rows = [FLAT] * 95 + [(101, 102, 99, 101), (101, 102, 99, 101)]
+    b = bars_from(rows)
+    assert T.find_fill(b, 0, 100, 96 * B) == 95            # 마지막 봉(24h 창 안)은 체결
+    b2 = bars_from([FLAT] * 96 + [(101, 102, 99, 101)])
+    assert T.find_fill(b2, 0, 100, 96 * B) is None          # limit_until 에 시작하는 봉은 안 됨
+
+
+def test_exact_levels_count_as_touch():
+    b = bars_from([(101, 102, 85.0, 101)] + [FLAT] * 400)
+    assert T.run_leg(b, 0, E, 72)[:2] == (85.0, "SL")       # 체결 봉 저가 = 손절가
+    b = fill_then([(100, 101, 85.0, 90)] + [FLAT] * 400)
+    assert T.run_leg(b, 0, E, 72)[:2] == (85.0, "SL")       # 다음 봉 저가 = 손절가
+    b = fill_then([(105, 112.0, 104, 110)] + [FLAT] * 800)
+    assert T.run_leg(b, 0, E, 168, tp_pct=12)[1] == "TP"    # 고가 = 정확히 +12%
+    b = fill_then([(102, 105.0, 101, 103), (103, 104, 100.5, 101)] + [FLAT] * 400)
+    assert T.run_leg(b, 0, E, 72, trig_pct=5)[:2] == (pytest.approx(100.5), "LOCK")
+
+
+def test_end_of_data_time_vs_cut():
+    b = fill_then([FLAT] * 288)                              # 마지막 봉 마감 = due → 시간 청산(마지막 종가)
+    assert T.run_leg(b, 0, E, 72)[:2] == (105, "TIME")
+    b = fill_then([FLAT] * 9 + [(106, 107, 104, 104.5)])     # due 전에 끝 → 자료 끊김, 마지막 종가
+    assert T.run_leg(b, 0, E, 72)[:2] == (104.5, "CUT")
+
+
+def test_missing_due_bar_uses_next_open():
+    b = fill_then([FLAT] * 287)
+    b = b + [(b[-1][0] + 3 * B, 103, 104, 102, 103)]        # due 봉(289번)과 그다음이 빠짐
+    assert T.run_leg(b, 0, E, 72)[:2] == (103, "TIME")
+
+
+def test_x_grid_and_holds():
+    rows = [(101, 104, 100.8, 103), (103, 103.5, 100.4, 101)] + [FLAT] * 800   # +4% 뒤 100.4
+    r = T.simulate_event(fill_then(rows), 0, 100, 100 * B)
+    assert r["why"]["H3-L3"] == "LOCK" and r["why"]["H3-L5"] == "TIME" and r["why"]["H3-L8"] == "TIME"
+    assert r["why"]["H4-V1"] == "TIME"                        # V1 트리거는 +12%
+    assert r["fill_t"] == B
+    b = fill_then([FLAT] * 800)
+    assert T.run_leg(b, 0, E, 72)[2] == 289 and T.run_leg(b, 0, E, 168)[2] == 673
+
+
+def test_h4_v2_weights_and_hold():
+    rows = [(105, 113, 104, 110)] + [FLAT] * 800
+    r = T.simulate_event(fill_then(rows), 0, 100, 100 * B)
+    want = 0.5 * T.ret_pct(E, 112.00000000000001) + 0.5 * T.ret_pct(E, 105)
+    assert r["ret"]["H4-V2"] == pytest.approx(want)
+
+
+def test_names_subset():
+    r = T.simulate_event(fill_then([FLAT] * 800), 0, 100, 100 * B, names=["H4-V1", "H4-현행"])
+    assert set(r["ret"]) == {"H4-V1", "H4-현행"}
+
+
+def test_window_done_boundary():
+    assert T.window_done(0, "H3", 72 * T.H) and not T.window_done(1, "H3", 72 * T.H)
+    assert T.window_done(0, "H4", 168 * T.H) and not T.window_done(0, "H4", 168 * T.H - 1)
+
+
+def test_win_is_strictly_positive_and_z():
+    s = T.stats([0, 0, 1, -1])
+    assert s["win"] == 25
+    c = T.compare([1, 2, 3], [0, 0, 0], 1)
+    assert c["z"] == pytest.approx(2 / (1 / 3 ** 0.5))
+
+
+def test_sort_key_ties():
+    ts = [{"fill_t": 5, "t_sig": 2, "symbol": "B", "event_id": "x"}, {"fill_t": 5, "t_sig": 1, "symbol": "Z", "event_id": "y"},
+          {"fill_t": 5, "t_sig": 1, "symbol": "A", "event_id": "z"}]
+    assert [t["event_id"] for t in sorted(ts, key=T.sort_key)] == ["z", "y", "x"]
