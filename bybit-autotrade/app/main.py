@@ -88,13 +88,16 @@ def main():
         log.info("텔레그램: 꺼짐 (TELEGRAM_BOT_TOKEN 없음)")
     for b in books:
         log.info("장부 %s (%s) %s %s", b.name, b.mode, "켜짐" if b.enabled else "꺼짐", b.disabled_reason)
+    from .withdraw import make_withdrawer
+    wd, wd_note = make_withdrawer(cfg, books, store, eng.notify, C.secret)
+    log.info("출금: %s", wd_note)
     t = threading.Thread(target=eng.run_forever, daemon=True, name="engine")
     t.start()
     pw = C.secret("DASH_PASSWORD")
     if pw and len(pw) >= 10:
         import uvicorn
         from .web import create_app
-        app = create_app(eng, store, pw, C.public_view(cfg), tg, market)
+        app = create_app(eng, store, pw, C.public_view(cfg), tg, market, withdrawer=wd, withdraw_note=wd_note)
         uvicorn.run(app, host=cfg["web"]["host"], port=int(cfg["web"]["port"]), log_level="warning")
     else:
         log.warning("DASH_PASSWORD 없음 또는 10자 미만 → 웹 화면 꺼짐 (텔레그램·엔진은 동작)")

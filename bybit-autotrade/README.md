@@ -7,7 +7,7 @@
   - `paper`: 실시간 시세 + 가상 체결 (기본값)
   - `demo`: 바이비트 데모 트레이딩
   - `live`: 실계좌. **사용자만 켤 수 있습니다** (아래 5절).
-- 출금 기능은 없습니다. 바이비트 키에는 출금 권한을 주지 마세요.
+- 출금은 **화이트리스트에 넣은 업비트 XRP 주소 1개로만** 보냅니다 (2026-10-15 사용자 결정, 10절). 그 밖의 출금·이체 기능은 없습니다.
 
 ## 1. 설치 (이미 되어 있음)
 ```
@@ -35,7 +35,7 @@ C:\Users\zzewwz\Desktop\bybit-autotrade\
 | `BYBIT_LIVE_API_KEY` / `_SECRET` | 실계좌 키 | live 장부 꺼짐 |
 
 **바이비트 키 만들 때**
-- 권한은 "읽기 + 거래(Contract · Orders · Positions)"만 줍니다. 출금(Withdraw)·이체는 끕니다.
+- 권한은 "읽기 + 거래(Contract · Orders · Positions)"를 줍니다. 출금(10절)을 쓰려면 출금(Withdraw) 권한도 켜고, 바이비트 출금 화이트리스트를 반드시 켭니다. 이체는 끕니다.
 - 가능하면 IP 제한을 겁니다(이 PC의 공인 IP).
 - 데모 키: 바이비트 메인 계정에서 "데모 트레이딩"으로 바꾼 뒤, 프로필 → API에서 만듭니다(테스트넷 키 아님).
 - 데모 계정에 가상 USDT가 필요하면 웹 화면에서 데모 트레이딩으로 들어가 신청합니다.
@@ -77,7 +77,7 @@ C:\Users\zzewwz\Desktop\bybit-autotrade\
 
 ## 5. live 켜기 (사용자만)
 코드·웹·텔레그램 어디에도 live로 바꾸는 기능은 없습니다. 아래 다섯 가지를 **모두** 직접 해야 live 장부가 켜집니다.
-1. `.env`에 `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`을 넣습니다(출금 권한 없는 키).
+1. `.env`에 `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`을 넣습니다 (출금을 쓰면 출금 권한 + IP 제한 + 화이트리스트, 10절).
 2. 같은 폴더에 `LIVE_CONFIRM.txt`를 만들고, 첫 줄에 정확히 `LIVE TRADING CONFIRMED BY OWNER`를 씁니다.
 3. `config.yaml`의 live 장부 블록 앞 `#`을 지웁니다(예산 H3 300, 관문 block).
 4. 바이비트 계정 마진 모드가 격리인지 확인합니다.
@@ -106,7 +106,7 @@ C:\Users\zzewwz\Desktop\bybit-autotrade\
 ```
 .venv\Scripts\python -m pytest -q tests
 ```
-- 리스크(한도 초과·일일 한도·청산가·중복·누적 정지), 엔진(사이클·재시작 복원·API 실패·정지/청산·레짐 관문), 안전장치(출금 없음·live 잠금·웹 경로), 레짐 계산.
+- 리스크(한도 초과·일일 한도·청산가·중복·누적 정지), 엔진(사이클·재시작 복원·API 실패·정지/청산·레짐 관문), 안전장치(매매 코드 출금 없음·출금은 화이트리스트 주소로만·live 잠금·웹 경로), 레짐 계산, 출금(계산·한도·실패 처리·웹).
 - `tools\paper_cycle.py`: 실제 시세로 짧은 사이클 점검. `tools\check_market.py`: 시세 연결 점검.
 
 ## 9. 알려진 한계
@@ -115,3 +115,24 @@ C:\Users\zzewwz\Desktop\bybit-autotrade\
 - 진입가가 지정가보다 낮게 체결되면, 손절은 지정가 기준 −15%로 남습니다(체결가 기준보다 조금 위).
 - 사이트 결과는 수수료 0.11%를 뺀 숫자입니다. 실전 숫자는 실제 수수료·펀딩·슬리피지가 모두 들어갑니다. 이 차이가 측정 대상입니다.
 - 레짐 계산은 바이비트 BTCUSDT 무기한 1시간봉을 씁니다. 연구는 바이낸스 현물을 썼고, 값은 거의 같지만 완전히 같지는 않습니다.
+
+## 10. 출금 (2026-10-15 추가, 사용자 결정)
+바이비트 → **업비트 XRP 주소 1개**(바이비트 화이트리스트에 넣은 본인 주소)로만 보냅니다. 업비트에서 팔고 케이뱅크로 보내는 것은 직접 합니다.
+- **쓰는 법**: 웹 화면 live 칸의 **💸 출금** → 달러 금액 → 계산 → 내용 확인 → 화면 비밀번호 다시 → 출금. 텔레그램으로 결과가 옵니다.
+- **계산**: 통장에 들어올 원화 = 도착 XRP × 업비트 시세 × (1 − 업비트 수수료) − 업비트 원화 출금 수수료 가 "요청 달러 × 원/달러" **이상**이 되게 XRP 수량을 잡습니다. 옮기는 사이 시세가 움직여도 모자라지 않게 여유(기본 2%)를 더합니다. 그래서 조금 더 들어옵니다. 원/달러는 업비트 USDT 원화 시세입니다.
+- **순서**: 바이비트 출금 수수료·최소 수량, 업비트 시세 확인 → 바이비트에 XRP 가 모자라면 현물 XRPUSDT 시장가로 부족분만 삼 → 잔고에 들어온 것을 확인 → 출금.
+- **한도**: 1회 `max_usd`(기본 100달러), 하루(한국 시간) 5회. 받는 주소·태그는 `config.yaml`의 `withdraw`에서만 바뀝니다. 코드도 다른 주소로의 출금 요청은 보내지 않습니다.
+- **실패하면**: 매수 뒤 출금이 안 되면 산 XRP 는 바이비트에 남고 다음 출금 때 씁니다. 네트워크 오류로 "결과 모름"이 뜨면 바이비트 앱 출금 내역을 확인하세요 (하루 횟수에는 셉니다). 출금 요청은 자동으로 다시 보내지 않습니다.
+- 포지션·주문에 묶인 증거금은 거래소가 출금하지 못하게 막습니다. 출금 뒤 잔고가 예산 합계보다 작아지면 확인 화면에 경고가 나옵니다 (예산은 💰 예산 수정에서 직접 낮춤).
+
+**켜는 순서** (지금은 `withdraw.enabled: false`)
+1. 바이비트 V5 공식 문서로 확인합니다 (2026-10-15 작성 때 문서 접속이 막혀 확인하지 못함 — 코드의 "V5 확인" 표시):
+   - `GET /v5/asset/coin/query-info`: 응답 `rows[].chains[]`의 `chain`(XRP 체인 이름), `withdrawFee`, `withdrawMin`, `minAccuracy`, `chainWithdraw`.
+   - `GET /v5/account/wallet-balance` (`accountType=UNIFIED`): `totalAvailableBalance`, `coin[].walletBalance` 가 출금·매수에 쓸 수 있는 값인지.
+   - `POST /v5/order/create` 현물 시장가 매수를 코인 수량으로 낼 때 `marketUnit=baseCoin`, 수량 소수 자리(`basePrecision`), 최소 주문(`minOrderQty`, `minOrderAmt`). 격리 마진 통합계정에서 현물 매수가 되는지.
+   - `POST /v5/asset/withdraw/create`: `coin`, `chain`, `address`, `tag`, `amount`, `timestamp`, `forceChain`, `accountType`(통합계정에서 바로 출금하는 값, 코드 `ACCOUNT_TYPE`), 수수료가 `amount`에서 빠지는지(`feeType`), 화이트리스트·출금 권한 키에 IP 제한이 필수인지.
+   - 공개 `GET /v5/market/tickers`, `GET /v5/market/instruments-info` (`category=spot`).
+2. 바이비트에서 live 키에 **출금 권한**을 켜고, 출금 **화이트리스트 스위치**가 켜져 있는지 봅니다.
+3. `config.yaml`의 `withdraw`에 `address`, `tag`를 넣고 `enabled: true` → 봇 재시작. 화면 live 칸 아래에 "출금: 꺼짐 (이유)"가 보이면 이유를 고칩니다.
+4. 처음에는 1~2달러로 한 번 해 보고, 업비트 도착 수량과 통장 금액을 확인합니다. 업비트 수수료(`upbit_fee_pct`, `upbit_krw_withdraw_fee`)는 업비트 앱의 값으로 맞춥니다.
+

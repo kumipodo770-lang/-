@@ -1,7 +1,9 @@
 """
 바이비트 V5 REST (서명). 문서: https://bybit-exchange.github.io/docs/v5/guide
 - 서명 = HMAC_SHA256(timestamp + apiKey + recvWindow + (GET: queryString | POST: jsonBody)) 소문자 hex
-- 허용한 엔드포인트만 부를 수 있다 (ALLOWED). 출금·자산 이동(asset 계열) 엔드포인트는 목록에 없다.
+- 허용한 엔드포인트만 부를 수 있다 (ALLOWED). 매매용 목록에는 출금·자산 이동(asset 계열) 엔드포인트가 없다.
+- 출금 기능(사용자 결정 2026-10-15)만 따로 WITHDRAW_ALLOWED 로 만든 클라이언트를 쓴다. 그 클라이언트는 출금 요청의
+  코인·체인·주소·태그가 설정 파일의 화이트리스트 주소(withdraw_dest)와 다르면 보내지 않고, 주문은 현물 매수만 낸다.
 - 키·서명·헤더는 로그·예외 메시지에 넣지 않는다.
 - 재시도: 네트워크 오류·5xx·10006(요청 과다)·10002(시각) 만, 최대 retries 번. 업무 오류(retCode≠0)는 재시도 안 함.
 """
@@ -30,6 +32,13 @@ ALLOWED = {
     ("GET", "/v5/execution/list"),
     ("POST", "/v5/account/demo-apply-money"),  # demo 전용 (아래에서 막음)
 }
+# 출금 전용 (app/withdraw.py). ⚠ V5 문서 확인 전 (2026-10-15) — 경로·파라미터는 문서로 확인한 뒤 출금을 켠다.
+WITHDRAW_ALLOWED = {
+    ("GET", "/v5/asset/coin/query-info"),       # 출금 수수료·최소 수량·소수 자리
+    ("GET", "/v5/account/wallet-balance"),      # USDT 사용 가능액·XRP 잔고
+    ("POST", "/v5/order/create"),               # 현물 XRPUSDT 시장가 매수만 (아래에서 막음)
+    ("POST", "/v5/asset/withdraw/create"),      # 화이트리스트 주소로만 (아래에서 막음)
+}
 RETRY_CODES = {10006, 10002, 10016}
 
 
@@ -44,10 +53,13 @@ class BybitNetError(Exception):
 
 
 class BybitREST:
-    def __init__(self, mode: str, api_key: str, api_secret: str, retries: int = 3, recv_window: int = 10000, timeout: int = 10):
+    def __init__(self, mode: str, api_key: str, api_secret: str, retries: int = 3, recv_window: int = 10000, timeout: int = 10,
+                 allowed=None, withdraw_dest=None):
         if mode not in BASES:
             raise ValueError("mode 는 demo 또는 live")
         self.mode = mode
+        self.allowed = allowed or ALLOWED
+        self.withdraw_dest = withdraw_dest    # {"coin","chain","address","tag"} — 출금 클라이언트만
         self.base = BASES[mode]
         self._key = api_key
         self._secret = api_secret.encode()
@@ -71,8 +83,17 @@ class BybitREST:
         return hmac.new(self._secret, (ts + self._key + self.recv + payload).encode(), hashlib.sha256).hexdigest()
 
     def call(self, method: str, path: str, params: dict | None = None) -> dict:
-        if (method, path) not in ALLOWED:
+        if (method, path) not in self.allowed:
             raise PermissionError(f"허용 안 된 엔드포인트 {method} {path}")
+        if path == "/v5/asset/withdraw/create":
+            d = self.withdraw_dest
+            if not d or any(str((params or {}).get(k, "")) != str(d[k]) for k in ("coin", "chain", "address", "tag")):
+                raise PermissionError("출금은 설정 파일의 화이트리스트 주소로만")
+        if self.allowed is WITHDRAW_ALLOWED and path == "/v5/order/create":
+            p = params or {}
+            if p.get("category") != "spot" or p.get("side") != "Buy" or not self.withdraw_dest \
+                    or p.get("symbol") != f"{self.withdraw_dest['coin']}USDT":
+                raise PermissionError("출금 클라이언트는 출금할 코인의 현물 매수만")
         if path == "/v5/account/demo-apply-money" and self.mode != "demo":
             raise PermissionError("demo 자금 신청은 demo 에서만")
         params = {k: v for k, v in (params or {}).items() if v is not None}

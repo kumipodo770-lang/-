@@ -6,6 +6,8 @@
   방법별 누적 손익 곡선. 차트 그리기는 lightweight-charts 4.2.0 (unpkg, 휴대폰 브라우저가 받음).
 - 예산 수정 (사용자 결정 2026-10-13): 세 종류 예산 칸만. 확인 단계 → 올릴 때는 화면 비밀번호 다시 → config.yaml 한 줄 저장 + 텔레그램 알림.
   최소 금액 미만 불가, 실계좌는 합계 ≤ 계좌 USDT. 한도 %·레버리지·모드(실계좌 켜기)는 여전히 설정 파일에서만.
+- 출금 (사용자 결정 2026-10-15): 화이트리스트에 넣은 업비트 XRP 주소 1개로만. 달러 금액 → 미리 보기(보낼 XRP·통장 예상 원화)
+  → 화면 비밀번호 다시 → 실행 + 텔레그램 알림. 받는 주소는 설정 파일에만 있고 화면에서 바꿀 수 없다 (app/withdraw.py).
 - 로그인 5번 틀리면 그 주소는 15분 잠금.
 """
 import io
@@ -15,14 +17,16 @@ import hmac
 import secrets
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from .timeutil import kst_str, now_ms
+from .withdraw import WithdrawError
 
 SESSION_SEC = 7 * 86400
 KST_SHIFT = 9 * 3600          # 차트 시간축을 한국 시간으로 보이게 (라이브러리는 UTC 로 그림)
 IVS = {"1": 60_000, "15": 900_000, "60": 3_600_000}
 
 
-def create_app(engine, store, password, cfg_public, telegram=None, market=None):
+def create_app(engine, store, password, cfg_public, telegram=None, market=None, withdrawer=None, withdraw_note="꺼짐"):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     sessions, fails, nonces = {}, {}, {}
     kcache = {}
@@ -101,6 +105,7 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None):
         return JSONResponse({"snap": snap, "legs": legs, "closed": closed, "decisions": dec, "events": evs,
                              "heartbeat_s": kst_str(hb), "heartbeat_age": (time.time() * 1000 - hb) / 1000 if hb else None,
                              "config": cfg_public,
+                             "withdraw": withdrawer.status() if withdrawer else {"enabled": False, "reason": withdraw_note},
                              "telegram": {"enabled": bool(telegram and telegram.ok), "chat_set": bool(telegram and telegram.chat_id),
                                           "seen_chat": telegram.seen_chat if telegram else None,
                                           "error": telegram.last_error if telegram else None}})
@@ -121,7 +126,7 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None):
         authed(req)
         body = await req.json()
         item = nonces.pop(body.get("nonce", ""), None)
-        if not item or item[0] == "budget" or item[2] < time.time():
+        if not item or item[0] not in ("stop", "resume", "closeall") or item[2] < time.time():
             raise HTTPException(400, "확인 시간이 지났습니다")
         return {"msg": engine.command(item[0], item[1])}
 
@@ -155,6 +160,46 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None):
                 fails[ip] = [f[0] + 1, time.time() + 900]
                 raise HTTPException(403, "비밀번호가 틀렸습니다")
         return {"msg": engine.request_budgets(book, budgets)}
+
+    # ---- 출금 (사용자 결정 2026-10-15): 미리 보기 → 화면 비밀번호 다시 → 실행 ----
+    def check_password(ip, pw):
+        f = fails.get(ip, [0, 0])
+        if f[0] >= 5 and time.time() < f[1]:
+            raise HTTPException(403, "비밀번호를 여러 번 틀려 잠겼습니다 (15분)")
+        if not hmac.compare_digest(str(pw or ""), password):
+            fails[ip] = [f[0] + 1, time.time() + 900]
+            raise HTTPException(403, "비밀번호가 틀렸습니다")
+
+    @app.post("/api/withdraw/preview")
+    async def withdraw_preview(req: Request):
+        authed(req)
+        if not withdrawer:
+            raise HTTPException(400, f"출금 기능 {withdraw_note}")
+        body = await req.json()
+        try:
+            p = await run_in_threadpool(withdrawer.preview, body.get("usd"))
+        except WithdrawError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(400, f"바이비트·업비트 조회 오류: {str(e)[:200]}")
+        n = secrets.token_hex(8)
+        nonces[n] = ("withdraw", p, time.time() + 120)
+        return {"nonce": n, "plan": p}
+
+    @app.post("/api/withdraw/apply")
+    async def withdraw_apply(req: Request):
+        authed(req)
+        ip = req.client.host if req.client else "?"
+        body = await req.json()
+        item = nonces.pop(body.get("nonce", ""), None)
+        if not item or item[0] != "withdraw" or item[2] < time.time() or not withdrawer:
+            raise HTTPException(400, "확인 시간이 지났습니다. 다시 계산해 주세요")
+        check_password(ip, body.get("password"))
+        try:
+            msg = await run_in_threadpool(withdrawer.execute, item[1])
+        except WithdrawError as e:
+            raise HTTPException(400, str(e))
+        return {"msg": msg}
 
     @app.get("/api/chart")
     def chart(req: Request, leg_id: int, iv: str = "15"):
@@ -269,8 +314,8 @@ button.stop{border-color:var(--warn);color:var(--warn)}button.close{border-color
 <script>
 const $=s=>document.querySelector(s);const f=(x,d=2)=>x==null?'-':(+x).toFixed(d);
 const cls=v=>v==null?'':(v>=0?'good':'bad');const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-let lastSnap=null;
-async function load(){const r=await fetch('/api/status');if(r.status==401){location='/login';return}const d=await r.json();lastSnap=d.snap;
+let lastSnap=null,lastWd=null;
+async function load(){const r=await fetch('/api/status');if(r.status==401){location='/login';return}const d=await r.json();lastSnap=d.snap;lastWd=d.withdraw;
  const age=d.heartbeat_age;$('#hb').textContent='엔진 '+(age==null?'-':(age<30?'정상 ':'⚠ ')+Math.round(age)+'초 전');$('#hb').className='pill '+(age!=null&&age<30?'good':'bad');
  const rg=d.snap.regime||{};let h='';
  const k1c=rg.k1==1?'good':rg.k1==-1?'bad':'warn',k7c=rg.k7==-1?'bad':'good';
@@ -301,7 +346,7 @@ async function load(){const r=await fetch('/api/status');if(r.status==401){locat
     <div class="ln"><span>순손익 (청산 확정)</span><b class="${cls(t.net)}">${f(t.net,3)}</b></div>
     <div class="ln"><span>보유 중 평가손익</span><b class="${cls(t.upnl)}">${f(t.upnl,3)}</b></div>
     <div class="ln"><span>확정 + 평가</span><b class="${cls((t.net||0)+(t.upnl||0))}">${f((t.net||0)+(t.upnl||0),3)}</b></div></div>`;
-  h+=`<div class="row" style="margin-top:10px"><button class="stop" onclick="act('stop','${b.name}')">정지</button><button class="go" onclick="act('resume','${b.name}')">재개</button><button class="close" onclick="act('closeall','${b.name}')">전체 청산</button>${b.enabled?`<button onclick="editBudget('${b.name}')">💰 예산 수정</button>`:''}</div></div>`}
+  h+=`<div class="row" style="margin-top:10px"><button class="stop" onclick="act('stop','${b.name}')">정지</button><button class="go" onclick="act('resume','${b.name}')">재개</button><button class="close" onclick="act('closeall','${b.name}')">전체 청산</button>${b.enabled?`<button onclick="editBudget('${b.name}')">💰 예산 수정</button>`:''}${b.mode=='live'&&lastWd&&lastWd.enabled?`<button onclick="wdOpen()">💸 출금</button>`:''}</div>${b.mode=='live'&&lastWd&&!lastWd.enabled?`<div class="mut sm" style="margin-top:6px">출금: ${esc(lastWd.reason)}</div>`:''}</div>`}
  $('#books').innerHTML=h;
  $('#legs').innerHTML='<tr><th>장부</th><th>전략</th><th>코인</th><th>상태</th><th>지정가</th><th>체결가</th><th>수량</th><th>L</th><th>손절</th><th>익절</th><th>체결</th><th>청산 예정</th></tr>'+d.legs.map(l=>`<tr class="click${l.id==curLeg?' sel':''}" onclick="showChart(${l.id})"><td>${l.book}</td><td>${l.strategy}${l.leg}</td><td>${l.symbol}</td><td>${l.status}</td><td>${l.limit_px}</td><td>${l.fill_px?(+l.fill_px).toPrecision(6):'-'}</td><td>${l.fill_qty||l.plan_qty}</td><td>${l.lev}</td><td>${l.sl_px}</td><td>${l.tp_px||'-'}</td><td>${l.fill_ts_s}</td><td>${l.exit_due_ts_s||l.limit_until_s}</td></tr>`).join('');
  $('#dec').innerHTML='<tr><th>시각</th><th>장부</th><th>코인</th><th>전략</th><th>결정</th><th>이유</th><th>K1/변동</th></tr>'+d.decisions.map(x=>`<tr><td>${x.ts_s}</td><td>${x.book}</td><td>${x.symbol}</td><td>${x.strategy}</td><td class="${x.decision=='enter'?'good':'mut'}">${x.decision=='enter'?'진입':'건너뜀'}</td><td>${esc(x.reason)}</td><td>${x.k1??'-'}/${x.k7??'-'}</td></tr>`).join('');
@@ -349,6 +394,28 @@ async function budgetNext(){const b=lastSnap.books.find(x=>x.name==bbook);const 
 async function budgetApply(){const pw=$('#bpw')?$('#bpw').value:'';
  const r=await fetch('/api/budget/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce:bnonce,password:pw})});const j=await r.json();
  closeB();alert(j.msg||j.detail);setTimeout(load,2500)}
-function closeB(){bnonce=null;$('#bdlg').style.display='none'}
+function closeB(){bnonce=null;wnonce=null;$('#bdlg').style.display='none'}
+let wnonce=null;
+function wdOpen(){const w=lastWd||{};
+ $('#bbox').innerHTML=`<p><b>💸 출금 → ${esc(w.dest)}</b><br><span class="mut sm">달러 금액 · 통장에 이 금액 이상 들어오게 계산 · 1회 최대 ${w.max_usd}달러 · 오늘 남은 ${w.left_today}/${w.count_per_day}회</span></p>
+ <label class="ln"><span>금액 (달러)</span><input type="number" inputmode="decimal" min="1" step="1" id="wd_usd" value="10" style="width:120px"></label>
+ <div class="row" style="margin-top:14px"><button class="go" onclick="wdNext()">계산</button><button onclick="closeB()">취소</button></div>`;$('#bdlg').style.display='flex'}
+async function wdNext(){const usd=+$('#wd_usd').value;$('#bbox').innerHTML='<p class="mut">계산 중…</p>';
+ const r=await fetch('/api/withdraw/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usd})});const j=await r.json();
+ if(!r.ok){closeB();alert(j.detail);return}wnonce=j.nonce;const p=j.plan;const n=x=>Math.round(x).toLocaleString();
+ $('#bbox').innerHTML=`<p><b>이렇게 출금할까요?</b></p>
+ <div class="ln"><span>받는 곳</span><b>${esc(p.dest)}</b></div>
+ <div class="ln"><span>바이비트에서 보낼 XRP</span><b>${p.amount}</b></div>
+ <div class="ln mut sm"><span>바이비트 출금 수수료 ${p.wd_fee} XRP 포함</span></div>
+ <div class="ln"><span>부족분 현물 매수</span><b>${+p.buy>0?`XRP ${p.buy} (약 ${f(p.buy_usdt)} USDT)`:'없음'}</b></div>
+ <div class="ln"><span>목표 (${p.usd}달러)</span><b>${n(p.target_krw)}원</b></div>
+ <div class="ln"><span>통장 예상 (지금 시세)</span><b class="good">${n(p.bank_krw)}원</b></div>
+ <div class="mut sm">업비트 XRP ${n(p.xrp_krw)}원 · 원/달러 ${n(p.usd_krw)} · 여유 ${p.buffer_pct}% · 오늘 남은 ${p.left_today}회</div>`
+  +(p.warnings||[]).map(x=>`<p class="warn sm">⚠ ${esc(x)}</p>`).join('')
+  +`<p class="warn sm" style="margin-top:10px">화면 비밀번호를 한 번 더 넣어 주세요 (2분 안에)</p><input type="password" id="wpw" autocomplete="current-password" style="width:100%">
+ <div class="row" style="margin-top:14px"><button class="close" onclick="wdApply()">출금</button><button onclick="closeB()">취소</button></div>`}
+async function wdApply(){const pw=$('#wpw').value;const nn=wnonce;$('#bbox').innerHTML='<p class="mut">출금 처리 중… (최대 20초)</p>';
+ const r=await fetch('/api/withdraw/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce:nn,password:pw})});const j=await r.json();
+ closeB();alert(j.msg||j.detail);load()}
 load();setInterval(load,10000);setInterval(()=>drawChart(false),15000);
 </script></body></html>"""

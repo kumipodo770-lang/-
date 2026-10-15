@@ -1,10 +1,11 @@
-"""안전장치: 출금 기능 없음, 허용 엔드포인트만, live 는 키+확인 파일 없으면 꺼짐, 웹에 한도 변경 경로 없음, 키 노출 없음."""
+"""안전장치: 매매 코드에 출금 없음(출금은 app/withdraw.py 전용 클라이언트만, 화이트리스트 주소로만), 허용 엔드포인트만,
+live 는 키+확인 파일 없으면 꺼짐, 웹에 한도 변경 경로 없음, 키 노출 없음."""
 import os
 import re
 import glob
 import pytest
 from app import config as C
-from app.bybit_rest import BybitREST, ALLOWED
+from app.bybit_rest import BybitREST, ALLOWED, WITHDRAW_ALLOWED
 from app.main import build_books
 from app.store import Store
 from conftest import Clock, FakeMarket
@@ -15,9 +16,35 @@ APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 def test_no_withdraw_or_transfer_endpoints():
     for m, p in ALLOWED:
         assert "/asset/" not in p and "withdraw" not in p.lower() and "transfer" not in p.lower()
+    for m, p in WITHDRAW_ALLOWED:                          # 출금 전용 목록에도 이체(transfer)는 없음
+        assert "transfer" not in p.lower()
     for f in glob.glob(os.path.join(APP, "*.py")):
+        if os.path.basename(f) in ("withdraw.py", "bybit_rest.py"):   # 출금 전용 모듈·허용 목록만 예외
+            continue
         code = open(f, encoding="utf-8").read()
-        assert not re.search(r"/v5/asset/|withdraw\(|/withdraw", code), f
+        assert not re.search(r"/v5/asset/|withdraw\(|/withdraw/create", code), f
+
+
+def test_withdraw_client_only_to_whitelisted_address_and_spot_buy():
+    dest = {"coin": "XRP", "chain": "XRP", "address": "rADDR", "tag": "123"}
+    w = BybitREST("live", "k", "s", retries=1, allowed=WITHDRAW_ALLOWED, withdraw_dest=dest)
+    for bad in ({**dest, "address": "rOTHER"}, {**dest, "tag": "999"}, {**dest, "chain": "ETH"}, {**dest, "coin": "USDT"},
+                {k: v for k, v in dest.items() if k != "tag"}):
+        with pytest.raises(PermissionError):
+            w.call("POST", "/v5/asset/withdraw/create", {**bad, "amount": "10"})
+    for bad in ({"category": "linear", "symbol": "XRPUSDT", "side": "Buy"}, {"category": "spot", "symbol": "XRPUSDT", "side": "Sell"},
+                {"category": "spot", "symbol": "BTCUSDT", "side": "Buy"}):
+        with pytest.raises(PermissionError):
+            w.call("POST", "/v5/order/create", bad)
+    for path in (("POST", "/v5/order/cancel"), ("POST", "/v5/position/set-leverage"), ("POST", "/v5/asset/transfer/inter-transfer")):
+        with pytest.raises(PermissionError):
+            w.call(*path, {})
+    trade = BybitREST("live", "k", "s")                    # 매매 클라이언트는 출금 불가 (주소가 맞아도)
+    with pytest.raises(PermissionError):
+        trade.call("POST", "/v5/asset/withdraw/create", {**dest, "amount": "10"})
+    nodest = BybitREST("live", "k", "s", allowed=WITHDRAW_ALLOWED)
+    with pytest.raises(PermissionError):
+        nodest.call("POST", "/v5/asset/withdraw/create", {**dest, "amount": "10"})
 
 
 def test_rest_refuses_unlisted_and_demo_money_on_live():
@@ -88,7 +115,8 @@ def test_web_has_no_limit_or_mode_routes(tmp_path):
     assert paths == {("GET", "/login"), ("POST", "/login"), ("GET", "/logout"), ("GET", "/"), ("GET", "/api/status"),
                      ("POST", "/api/confirm"), ("POST", "/api/action"), ("GET", "/api/export.csv"),
                      ("GET", "/api/chart"), ("GET", "/api/equity"),
-                     ("POST", "/api/budget/confirm"), ("POST", "/api/budget/apply")}     # 예산만 (한도 %·레버리지·모드는 없음)
+                     ("POST", "/api/budget/confirm"), ("POST", "/api/budget/apply"),     # 예산만 (한도 %·레버리지·모드는 없음)
+                     ("POST", "/api/withdraw/preview"), ("POST", "/api/withdraw/apply")}  # 출금 (주소는 설정 파일에만)
 
 
 def test_web_requires_login_and_confirm(tmp_path):

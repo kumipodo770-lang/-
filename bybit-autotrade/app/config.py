@@ -45,6 +45,9 @@ DEFAULTS = {
     "telegram": {"enabled": True},
     "web": {"host": "0.0.0.0", "port": 8100},
     "paper": {"slippage_pct": 0.05, "start_equity": 10000},
+    # 출금 (사용자 결정 2026-10-15): 바이비트 화이트리스트에 넣은 업비트 XRP 주소 1개로만. app/withdraw.py
+    "withdraw": {"enabled": False, "coin": "XRP", "chain": "XRP", "address": "", "tag": "", "max_usd": 100, "count_per_day": 5,
+                 "buffer_pct": 2.0, "upbit_fee_pct": 0.05, "upbit_krw_withdraw_fee": 1000, "spot_fee_pct": 0.1, "usd_krw": 0},
 }
 
 SECRET_NAMES = ("BYBIT_DEMO_API_KEY", "BYBIT_DEMO_API_SECRET", "BYBIT_LIVE_API_KEY", "BYBIT_LIVE_API_SECRET",
