@@ -88,8 +88,11 @@ def main():
         log.info("텔레그램: 꺼짐 (TELEGRAM_BOT_TOKEN 없음)")
     for b in books:
         log.info("장부 %s (%s) %s %s", b.name, b.mode, "켜짐" if b.enabled else "꺼짐", b.disabled_reason)
-    from .withdraw import make_withdrawer
-    wd, wd_note = make_withdrawer(cfg, books, store, eng.notify, C.secret)
+    try:                                           # 출금 설정 문제로 매매가 멈추면 안 됨
+        from .withdraw import make_withdrawer
+        wd, wd_note = make_withdrawer(cfg, books, store, eng.notify, C.secret)
+    except Exception as e:
+        wd, wd_note = None, f"꺼짐: 설정 오류 {type(e).__name__}"
     log.info("출금: %s", wd_note)
     t = threading.Thread(target=eng.run_forever, daemon=True, name="engine")
     t.start()

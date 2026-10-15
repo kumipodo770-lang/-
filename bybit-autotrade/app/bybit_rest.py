@@ -79,6 +79,10 @@ class BybitREST:
         except Exception as e:  # 시간 동기화 실패는 치명적이지 않음
             log.warning("server time sync 실패: %s", type(e).__name__)
 
+    def now_ms(self) -> int:
+        """서버 시각에 맞춘 현재 ms (서명 헤더와 같은 기준)"""
+        return int(time.time() * 1000) + self.time_offset
+
     def _sign(self, ts: str, payload: str) -> str:
         return hmac.new(self._secret, (ts + self._key + self.recv + payload).encode(), hashlib.sha256).hexdigest()
 
@@ -89,11 +93,12 @@ class BybitREST:
             d = self.withdraw_dest
             if not d or any(str((params or {}).get(k, "")) != str(d[k]) for k in ("coin", "chain", "address", "tag")):
                 raise PermissionError("출금은 설정 파일의 화이트리스트 주소로만")
-        if self.allowed is WITHDRAW_ALLOWED and path == "/v5/order/create":
+        if self.withdraw_dest and path == "/v5/order/create":
             p = params or {}
-            if p.get("category") != "spot" or p.get("side") != "Buy" or not self.withdraw_dest \
-                    or p.get("symbol") != f"{self.withdraw_dest['coin']}USDT":
-                raise PermissionError("출금 클라이언트는 출금할 코인의 현물 매수만")
+            if (p.get("category") != "spot" or p.get("side") != "Buy" or p.get("orderType") != "Market"
+                    or p.get("marketUnit") != "baseCoin" or p.get("isLeverage") not in (None, 0, "0")
+                    or p.get("symbol") != f"{self.withdraw_dest['coin']}USDT"):
+                raise PermissionError("출금 클라이언트는 출금할 코인의 현물 시장가 매수(빌리지 않음)만")
         if path == "/v5/account/demo-apply-money" and self.mode != "demo":
             raise PermissionError("demo 자금 신청은 demo 에서만")
         params = {k: v for k, v in (params or {}).items() if v is not None}

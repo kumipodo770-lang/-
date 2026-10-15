@@ -126,13 +126,19 @@ C:\Users\zzewwz\Desktop\bybit-autotrade\
 - 포지션·주문에 묶인 증거금은 거래소가 출금하지 못하게 막습니다. 출금 뒤 잔고가 예산 합계보다 작아지면 확인 화면에 경고가 나옵니다 (예산은 💰 예산 수정에서 직접 낮춤).
 
 **켜는 순서** (지금은 `withdraw.enabled: false`)
-1. 바이비트 V5 공식 문서로 확인합니다 (2026-10-15 작성 때 문서 접속이 막혀 확인하지 못함 — 코드의 "V5 확인" 표시):
-   - `GET /v5/asset/coin/query-info`: 응답 `rows[].chains[]`의 `chain`(XRP 체인 이름), `withdrawFee`, `withdrawMin`, `minAccuracy`, `chainWithdraw`.
-   - `GET /v5/account/wallet-balance` (`accountType=UNIFIED`): `totalAvailableBalance`, `coin[].walletBalance` 가 출금·매수에 쓸 수 있는 값인지.
-   - `POST /v5/order/create` 현물 시장가 매수를 코인 수량으로 낼 때 `marketUnit=baseCoin`, 수량 소수 자리(`basePrecision`), 최소 주문(`minOrderQty`, `minOrderAmt`). 격리 마진 통합계정에서 현물 매수가 되는지.
-   - `POST /v5/asset/withdraw/create`: `coin`, `chain`, `address`, `tag`, `amount`, `timestamp`, `forceChain`, `accountType`(통합계정에서 바로 출금하는 값, 코드 `ACCOUNT_TYPE`), 수수료가 `amount`에서 빠지는지(`feeType`), 화이트리스트·출금 권한 키에 IP 제한이 필수인지.
-   - 공개 `GET /v5/market/tickers`, `GET /v5/market/instruments-info` (`category=spot`).
-2. 바이비트에서 live 키에 **출금 권한**을 켜고, 출금 **화이트리스트 스위치**가 켜져 있는지 봅니다.
-3. `config.yaml`의 `withdraw`에 `address`, `tag`를 넣고 `enabled: true` → 봇 재시작. 화면 live 칸 아래에 "출금: 꺼짐 (이유)"가 보이면 이유를 고칩니다.
-4. 처음에는 1~2달러로 한 번 해 보고, 업비트 도착 수량과 통장 금액을 확인합니다. 업비트 수수료(`upbit_fee_pct`, `upbit_krw_withdraw_fee`)는 업비트 앱의 값으로 맞춥니다.
-
+1. 바이비트 V5 공식 문서로 확인합니다 (2026-10-15 작성 때 문서 접속이 막혀 확인하지 못함 — 코드의 "V5 확인" 표시).
+   **틀리면 돈이 모자라게 갈 수 있는 것 (꼭 확인)**
+   - `GET /v5/asset/coin/query-info`의 `withdrawFee`가 XRP 출금 때 실제로 빠지는 고정 수수료인지. `withdrawPercentageFee`가 0인지 (0이 아니면 코드가 출금을 거부함).
+   - `POST /v5/asset/withdraw/create`에서 수수료가 `amount`에서 빠지는지 따로 붙는지 (`feeType`). 코드는 둘 다 모자라지 않게 잡지만, 값을 명시하는 게 좋음.
+   **틀리면 안전하게 오류가 나는 것**
+   - `withdraw/create` 파라미터: `coin`, `chain`(XRP 체인 이름), `address`, `tag`, `amount`, `timestamp`, `forceChain`, `accountType`(통합계정에서 바로 출금하는 값, 코드 `ACCOUNT_TYPE`), 응답 `id`.
+   - **트래블룰**: 한국 계정에서 업비트로 보낼 때 `vaspEntityId`·받는 사람 정보가 필요한지. 필요하면 코드에 추가해야 함 (지금은 안 보냄 → 거절됨).
+   - 확실한 거절로 볼 오류 코드 목록 (코드 `definite_reject`: 10001·10003·10004·10005·10010·131xxx). 그 밖의 코드는 "결과 모름"으로 보고 하루 횟수에 셈. 중복 방지용 `requestId`가 있으면 넣는 게 좋음.
+   - `GET /v5/account/wallet-balance` (`accountType=UNIFIED`): `coin[].walletBalance`(출금에 쓸 수 있는 XRP), `totalAvailableBalance`(비어 있으면 매수 전 잔고 검사를 건너뜀).
+   - 현물 매수 `POST /v5/order/create`: `marketUnit=baseCoin`(코인 수량으로 사기), `isLeverage=0`, `orderLinkId` 형식. 격리 마진 통합계정에서 현물 매수가 되는지, 키에 현물 거래 권한이 필요한지.
+   - 통합계정에서 바로 출금할 때 키에 "자산 이체" 권한이 필요한지. 출금 권한 키에 IP 제한이 필수인지 (IP 가 바뀌면 매매도 멈춤).
+   - 공개 `GET /v5/market/tickers`, `GET /v5/market/instruments-info` (`category=spot`)의 `ask1Price`, `basePrecision`, `minOrderQty`, `minOrderAmt`.
+2. 업비트에서 확인합니다: 바이비트에서 오는 XRP 입금을 받는지(트래블룰), XRP 입금 수수료가 없는지, 원화 마켓 매도 수수료(`upbit_fee_pct`)·원화 출금 수수료(`upbit_krw_withdraw_fee`)·최소 금액(`upbit_min_krw`)이 설정값과 같거나 작은지.
+3. 바이비트에서 live 키에 **출금 권한**을 켜고, 출금 **화이트리스트 스위치**가 켜져 있는지 봅니다.
+4. `config.yaml`의 `withdraw`에 `address`와 `tag`(숫자를 **따옴표 안에**)를 넣고 `enabled: true` → 봇 재시작. 화면 live 칸 아래에 "출금: 꺼짐 (이유)"가 보이면 이유를 고칩니다. 출금 설정이 잘못돼도 매매는 그대로 돕니다.
+5. 처음에는 **5달러**로 한 번 해 봅니다 (업비트 최소 5,000원 때문에 약 3.6달러 미만은 거부). 업비트 도착 수량과 통장 금액을 확인합니다.

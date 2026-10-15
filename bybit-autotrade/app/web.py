@@ -85,6 +85,14 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None, 
             return RedirectResponse("/login", 303)
         return DASH_HTML
 
+    def withdraw_status():
+        if not withdrawer:
+            return {"enabled": False, "reason": withdraw_note}
+        try:
+            return withdrawer.status()
+        except Exception as e:                     # 출금 쪽 오류가 현황판 전체를 막지 않게
+            return {"enabled": False, "reason": f"출금 상태 오류 {type(e).__name__}"}
+
     @app.get("/api/status")
     def status(req: Request):
         authed(req)
@@ -105,7 +113,7 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None, 
         return JSONResponse({"snap": snap, "legs": legs, "closed": closed, "decisions": dec, "events": evs,
                              "heartbeat_s": kst_str(hb), "heartbeat_age": (time.time() * 1000 - hb) / 1000 if hb else None,
                              "config": cfg_public,
-                             "withdraw": withdrawer.status() if withdrawer else {"enabled": False, "reason": withdraw_note},
+                             "withdraw": withdraw_status(),
                              "telegram": {"enabled": bool(telegram and telegram.ok), "chat_set": bool(telegram and telegram.chat_id),
                                           "seen_chat": telegram.seen_chat if telegram else None,
                                           "error": telegram.last_error if telegram else None}})
@@ -159,6 +167,7 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None, 
             if not hmac.compare_digest(str(body.get("password", "")), password):
                 fails[ip] = [f[0] + 1, time.time() + 900]
                 raise HTTPException(403, "비밀번호가 틀렸습니다")
+            fails.pop(ip, None)
         return {"msg": engine.request_budgets(book, budgets)}
 
     # ---- 출금 (사용자 결정 2026-10-15): 미리 보기 → 화면 비밀번호 다시 → 실행 ----
@@ -169,6 +178,7 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None, 
         if not hmac.compare_digest(str(pw or ""), password):
             fails[ip] = [f[0] + 1, time.time() + 900]
             raise HTTPException(403, "비밀번호가 틀렸습니다")
+        fails.pop(ip, None)
 
     @app.post("/api/withdraw/preview")
     async def withdraw_preview(req: Request):
@@ -199,6 +209,8 @@ def create_app(engine, store, password, cfg_public, telegram=None, market=None, 
             msg = await run_in_threadpool(withdrawer.execute, item[1])
         except WithdrawError as e:
             raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(400, f"출금 결과 확인 필요 ({type(e).__name__}) — 텔레그램과 바이비트 앱 출금 내역을 확인하세요")
         return {"msg": msg}
 
     @app.get("/api/chart")
@@ -400,8 +412,10 @@ function wdOpen(){const w=lastWd||{};
  $('#bbox').innerHTML=`<p><b>💸 출금 → ${esc(w.dest)}</b><br><span class="mut sm">달러 금액 · 통장에 이 금액 이상 들어오게 계산 · 1회 최대 ${w.max_usd}달러 · 오늘 남은 ${w.left_today}/${w.count_per_day}회</span></p>
  <label class="ln"><span>금액 (달러)</span><input type="number" inputmode="decimal" min="1" step="1" id="wd_usd" value="10" style="width:120px"></label>
  <div class="row" style="margin-top:14px"><button class="go" onclick="wdNext()">계산</button><button onclick="closeB()">취소</button></div>`;$('#bdlg').style.display='flex'}
+async function jget(r){try{return await r.json()}catch(e){return {detail:'응답을 읽지 못했습니다 (HTTP '+r.status+')'}}}
 async function wdNext(){const usd=+$('#wd_usd').value;$('#bbox').innerHTML='<p class="mut">계산 중…</p>';
- const r=await fetch('/api/withdraw/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usd})});const j=await r.json();
+ let r,j;try{r=await fetch('/api/withdraw/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usd})});j=await jget(r)}
+ catch(e){closeB();alert('연결 오류 — 다시 해 주세요');return}
  if(!r.ok){closeB();alert(j.detail);return}wnonce=j.nonce;const p=j.plan;const n=x=>Math.round(x).toLocaleString();
  $('#bbox').innerHTML=`<p><b>이렇게 출금할까요?</b></p>
  <div class="ln"><span>받는 곳</span><b>${esc(p.dest)}</b></div>
@@ -415,7 +429,8 @@ async function wdNext(){const usd=+$('#wd_usd').value;$('#bbox').innerHTML='<p c
   +`<p class="warn sm" style="margin-top:10px">화면 비밀번호를 한 번 더 넣어 주세요 (2분 안에)</p><input type="password" id="wpw" autocomplete="current-password" style="width:100%">
  <div class="row" style="margin-top:14px"><button class="close" onclick="wdApply()">출금</button><button onclick="closeB()">취소</button></div>`}
 async function wdApply(){const pw=$('#wpw').value;const nn=wnonce;$('#bbox').innerHTML='<p class="mut">출금 처리 중… (최대 20초)</p>';
- const r=await fetch('/api/withdraw/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce:nn,password:pw})});const j=await r.json();
- closeB();alert(j.msg||j.detail);load()}
+ let msg;try{const r=await fetch('/api/withdraw/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce:nn,password:pw})});const j=await jget(r);msg=j.msg||j.detail}
+ catch(e){msg='연결이 끊겨 결과를 모릅니다 — 다시 누르지 말고 텔레그램과 바이비트 앱 출금 내역을 먼저 확인하세요'}
+ closeB();alert(msg);load()}
 load();setInterval(load,10000);setInterval(()=>drawChart(false),15000);
 </script></body></html>"""
